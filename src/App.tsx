@@ -37,6 +37,7 @@ type FormState = {
   headline: string;
   language: Language;
   accent: string;
+  backgroundColor: string;
   font: string;
   textColor?: string;
   qrColor: string;
@@ -59,7 +60,7 @@ type FormState = {
   patternDensity: number;
   qrStyle: "square" | "rounded" | "dots" | "organic";
   qrBackgroundMode: "card" | "transparent" | "white";
-  qrTarget: "phone" | "profile";
+  qrTarget: "phone" | "profile" | "vcard";
   cardFormat?: "vehicle" | "id" | "badge" | "lanyard" | "brochure";
   builtinPatternId?: string;
   accentShape?: string;
@@ -188,6 +189,50 @@ const copy = {
 };
 
 const palettes = ["#ff4d45", "#071b2d", "#008c91", "#f5c400", "#bd9b6c", "#667684"];
+
+type Rgb = { r: number; g: number; b: number };
+function hexToRgb(hex: string): Rgb {
+  const h = (hex || "").replace("#", "");
+  const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h.padEnd(6, "0").slice(0, 6);
+  const int = parseInt(n, 16) || 0;
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+function rgbToHex({ r, g, b }: Rgb): string {
+  const t = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${t(r)}${t(g)}${t(b)}`;
+}
+function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
+  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t };
+}
+function luminance({ r, g, b }: Rgb): number {
+  const f = (v: number) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function contrastRatio(a: Rgb, b: Rgb): number {
+  const l1 = luminance(a), l2 = luminance(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+function readableInk(bg: Rgb): Rgb {
+  const black = { r: 17, g: 17, b: 17 }, white = { r: 255, g: 255, b: 255 };
+  return contrastRatio(bg, black) >= contrastRatio(bg, white) ? black : white;
+}
+// Tek marka renginden kontrast-garantili 4 palet üretir: {bg, accent, ink}
+function brandPalettes(brandHex: string): Array<{ bg: string; accent: string; ink: string }> {
+  const brand = hexToRgb(brandHex);
+  const white = { r: 255, g: 255, b: 255 }, black = { r: 17, g: 17, b: 17 };
+  const recipes = [
+    { bg: mixRgb(brand, white, 0.9), accent: brand },
+    { bg: white, accent: brand },
+    { bg: mixRgb(brand, black, 0.86), accent: mixRgb(brand, white, 0.28) },
+    { bg: black, accent: mixRgb(brand, white, 0.12) },
+  ];
+  return recipes.map(({ bg, accent }) => {
+    const ink = readableInk(bg);
+    let acc = accent;
+    if (contrastRatio(bg, acc) < 2) acc = mixRgb(acc, ink, 0.45);
+    return { bg: rgbToHex(bg), accent: rgbToHex(acc), ink: rgbToHex(ink) };
+  });
+}
 const templateFormats: Record<NonNullable<FormState["cardFormat"]>, string[]> = {
   vehicle: ["minimal", "night", "energy", "classic", "saas", "parkalert", "gothic"],
   id: ["monochrome", "pastel", "teacher", "health", "cream", "executive"],
@@ -243,8 +288,28 @@ function phoneQrValue(phone: string) {
   return `tel:+${digits.startsWith("0") ? `90${digits.slice(1)}` : digits}`;
 }
 
+// İnternetsiz çalışan vCard: okutunca cihaz doğrudan "rehbere ekle" ekranını açar.
+function vcardQrValue(form: FormState) {
+  const esc = (v: string) => String(v || "").replace(/[\r\n]/g, " ").replace(/([;,\\])/g, "\\$1");
+  const tel = phoneQrValue(form.phone).replace(/^tel:/, "");
+  const note = form.plate ? `Araç plakası: ${form.plate}` : "YolKart araç iletişim kartı";
+  return [
+    "BEGIN:VCARD", "VERSION:3.0",
+    `FN:${esc(form.owner)}`,
+    `TEL;TYPE=CELL:${esc(tel)}`,
+    form.url ? `URL:${esc(form.url)}` : "",
+    `NOTE:${esc(note)}`,
+    "END:VCARD",
+  ].filter(Boolean).join("\r\n");
+}
+
 function StyledQr({ value, color, background, size, style }: { value: string; color: string; background: string; size: number; style: FormState["qrStyle"] }) {
-  const matrix = useMemo(() => QRCode.create(value || "https://yolkart.app", { errorCorrectionLevel: "H" }).modules, [value]);
+  // Uzun yüklerde (vCard) "H" seviyesi matrisi aşırı yoğunlaştırıp küçük basımda okunmaz hale getirir.
+  const matrix = useMemo(() => {
+    const data = value || "https://yolkart.app";
+    const level = data.length > 120 ? "M" : data.length > 60 ? "Q" : "H";
+    return QRCode.create(data, { errorCorrectionLevel: level }).modules;
+  }, [value]);
   const quiet = 4;
   const total = matrix.size + quiet * 2;
   const cells = [];
@@ -312,8 +377,9 @@ function StyledText({ text, styles = [] }: { text: string; styles?: InlineTextSt
 function CardPreview({ form, template, compact = false, zoom = 100, resetVersion = 0, initialLayout, onSave, onSaveAsTemplate, onResetAll, onLayoutChange, onSelectionChange, customShapes = [] }: { form: FormState; template: CardTemplate; compact?: boolean; zoom?: number; resetVersion?: number; initialLayout?: ElementLayout; onSave?: (layout: ElementLayout) => void; onSaveAsTemplate?: (layout: ElementLayout) => void; onResetAll?: () => void; onLayoutChange?: (layout: ElementLayout) => void; onSelectionChange?: (selected: CardElementId[]) => void; customShapes?: Array<{ id: string; name: string; dataUri: string }> }) {
   const cardText = copy[form.language];
   const effectiveMotif = form.showPattern === false ? "none" : form.backgroundImage ? "none" : form.motif === "none" ? template.motif : form.motif;
-  const qrBackground = form.qrBackgroundMode === "white" ? "#ffffff" : form.qrBackgroundMode === "transparent" ? "transparent" : template.bg;
-  const qrForeground = safeQrColor(form.qrColor, qrBackground === "transparent" ? template.bg : qrBackground);
+  const cardBackground = form.backgroundColor || template.bg;
+  const qrBackground = form.qrBackgroundMode === "white" ? "#ffffff" : form.qrBackgroundMode === "transparent" ? "transparent" : cardBackground;
+  const qrForeground = safeQrColor(form.qrColor, qrBackground === "transparent" ? cardBackground : qrBackground);
   const cardFormat = form.cardFormat || "vehicle";
   const [selected, setSelected] = useState<CardElementId[]>([]);
   const [layout, setLayout] = useState<ElementLayout>(() => compact ? normalizeElementLayout(initialLayout) : normalizeElementLayout(initialLayout));
@@ -492,7 +558,7 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
 
   return (
     <div className={`card-stage ${compact ? "compact-stage" : ""}`}>
-    <div className={`vehicle-card format-${cardFormat} template-${template.id} align-${form.textAlign} ${form.showPattern !== false && form.backgroundImage ? "has-custom-background" : ""} ${compact ? "compact-card" : "is-editing"}`} onPointerDown={() => !compact && setSelected(form.showPattern !== false && form.backgroundImage ? ["background"] : [])} style={{ "--card-bg": template.bg, "--accent": form.accent || template.accent, "--ink": form.textColor || template.ink, "--letter-spacing": `${form.letterSpacing}px`, "--pattern-unit": `${Math.round(190 / form.patternDensity)}px`, "--image-repeat-size": `${Math.round(720 / form.patternDensity)}px`, "--pattern-opacity": form.backgroundOpacity / 100, fontFamily: form.font || template.font, borderRadius: form.radius, outline: form.borderWidth ? `${form.borderWidth}px solid ${form.accent}` : undefined, outlineOffset: form.borderWidth ? -form.borderWidth : undefined } as React.CSSProperties}>
+    <div className={`vehicle-card format-${cardFormat} template-${template.id} align-${form.textAlign} ${form.showPattern !== false && form.backgroundImage ? "has-custom-background" : ""} ${compact ? "compact-card" : "is-editing"}`} onPointerDown={() => !compact && setSelected(form.showPattern !== false && form.backgroundImage ? ["background"] : [])} style={{ "--card-bg": cardBackground, "--accent": form.accent || template.accent, "--ink": form.textColor || template.ink, "--letter-spacing": `${form.letterSpacing}px`, "--pattern-unit": `${Math.round(190 / form.patternDensity)}px`, "--image-repeat-size": `${Math.round(720 / form.patternDensity)}px`, "--pattern-opacity": form.backgroundOpacity / 100, fontFamily: form.font || template.font, borderRadius: form.radius, outline: form.borderWidth ? `${form.borderWidth}px solid ${form.accent}` : undefined, outlineOffset: form.borderWidth ? -form.borderWidth : undefined } as React.CSSProperties}>
       {form.showPattern !== false && form.backgroundImage && visible("background") && <div {...elementProps("background")}><div className={`custom-background size-${form.backgroundSize}`} style={{ backgroundImage: `url("${form.backgroundImage.replace(/"/g, "%22")}")`, backgroundPosition: form.backgroundPosition, opacity: form.backgroundOpacity / 100 }} /></div>}
       {form.overlayOpacity > 0 && <div className="background-overlay" style={{ background: form.overlayColor, opacity: form.overlayOpacity / 100 }} />}
       {(form.accentShape || "default") !== "none" && visible("accent") && (() => {
@@ -505,7 +571,7 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
       </div>
       {effectiveMotif !== "none" && visible("motif") && <div {...elementProps("motif")}><div className={`motif motif-${effectiveMotif}`} aria-hidden="true" /></div>}
       {visible("scanPanel") && <div {...scanPanelProps} className={`${scanPanelProps.className || ""} scan-row`.trim()}>
-        {visible("qr") && <div {...elementProps("qr")}><div className="qr-block"><StyledQr value={form.qrTarget === "profile" ? form.url : phoneQrValue(form.phone)} size={compact ? 58 : 172} color={layout.qr.color || qrForeground} background={qrBackground} style={form.qrStyle} /><span>{form.language === "tr" ? "TARA" : "SCAN"}</span></div></div>}
+        {visible("qr") && <div {...elementProps("qr")}><div className="qr-block"><StyledQr value={form.qrTarget === "profile" ? form.url : form.qrTarget === "vcard" ? vcardQrValue(form) : phoneQrValue(form.phone)} size={compact ? 58 : 172} color={layout.qr.color || qrForeground} background={qrBackground} style={form.qrStyle} /><span>{form.language === "tr" ? "TARA" : "SCAN"}</span></div></div>}
         {form.showNfc && visible("nfc") && <div {...elementProps("nfc")}><div className="nfc-mark"><Nfc /><strong>NFC</strong></div></div>}
       </div>}
       <div className="identity">
@@ -546,8 +612,11 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [aiArtPrompt, setAiArtPrompt] = useState("Modern, profesyonel, koyu lacivert ve turkuaz geometrik araç iletişim kartı");
+  const [aiArtLoading, setAiArtLoading] = useState(false);
+  const [aiArtError, setAiArtError] = useState("");
   const [aiInput, setAiInput] = useState({ provider: "deepseek", profession: "Mühendis", city: "Gaziantep", tone: "Samimi", prompt: "Modern, güven veren ve hafif esprili olsun." });
-  const [settings, setSettings] = useState({ defaultProvider: "deepseek", deepseekModel: "deepseek-v4-flash", openrouterModel: "deepseek/deepseek-v4-flash", deepseekKey: "", openrouterKey: "", deepseekConfigured: false, openrouterConfigured: false });
+  const [settings, setSettings] = useState({ defaultProvider: "deepseek", deepseekModel: "deepseek-v4-flash", openrouterModel: "deepseek/deepseek-v4-flash", imageModel: "bytedance-seed/seedream-4.5", deepseekKey: "", openrouterKey: "", deepseekConfigured: false, openrouterConfigured: false });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState<"" | "deepseek" | "openrouter">("");
   const [providerModels, setProviderModels] = useState<{ deepseek: Array<{ id: string; name: string }>; openrouter: Array<{ id: string; name: string }> }>({ deepseek: [], openrouter: [] });
@@ -560,6 +629,11 @@ export default function App() {
   const [templateLayouts, setTemplateLayouts] = useState<Record<string, ElementLayout>>(() => {
     try { return JSON.parse(localStorage.getItem("yolkart-template-layouts") || "{}"); } catch { return {}; }
   });
+  const [brandColor, setBrandColor] = useState("#1f6feb");
+  const brandPalettePreview = useMemo(() => brandPalettes(brandColor), [brandColor]);
+  const applyBrandPalette = (p: { bg: string; accent: string; ink: string }) => {
+    setForm((current) => ({ ...current, backgroundColor: p.bg, accent: p.accent, textColor: p.ink, qrColor: p.ink, backgroundImage: "", motif: "none" }));
+  };
   const handleLayoutChange = useCallback((layout: ElementLayout) => {
     setTemplateLayouts((prev) => {
       if (prev[activeTemplate] === layout) return prev;
@@ -617,6 +691,7 @@ export default function App() {
     headline: "ARAÇ SAHİBİNE ULAŞIN",
     language: "tr",
     accent: "#ff4d45",
+    backgroundColor: "#ffffff",
     font: "'Segoe UI', Arial, sans-serif",
     qrColor: "#071320",
     showPhone: true,
@@ -802,7 +877,7 @@ export default function App() {
 
   const chooseTemplate = (item: CardTemplate) => {
     setActiveTemplate(item.id);
-    setForm((current) => ({ ...current, accent: item.accent, textColor: item.ink, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundImage: "", backgroundOpacity: 12, overlayOpacity: 0, radius: 18, borderWidth: 0, patternDensity: 5 }));
+    setForm((current) => ({ ...current, backgroundColor: item.bg, accent: item.accent, textColor: item.ink, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundImage: "", backgroundOpacity: 12, overlayOpacity: 0, radius: 18, borderWidth: 0, patternDensity: 5 }));
   };
 
   const chooseCustomTemplate = (saved: SavedTemplate) => {
@@ -832,7 +907,7 @@ export default function App() {
       vehicle: "minimal", id: "monochrome", badge: "technical", lanyard: "premium", brochure: "classic",
     };
     const nextTemplate = templates.find((item) => item.id === recommended[format]) || templates[0];
-    setForm((current) => ({ ...current, cardFormat: format, accent: nextTemplate.accent, textColor: nextTemplate.ink, qrColor: nextTemplate.ink, font: nextTemplate.font }));
+    setForm((current) => ({ ...current, cardFormat: format, backgroundColor: nextTemplate.bg, accent: nextTemplate.accent, textColor: nextTemplate.ink, qrColor: nextTemplate.ink, font: nextTemplate.font }));
     setActiveTemplate(nextTemplate.id);
     setResetVersion((value) => value + 1);
   };
@@ -988,18 +1063,46 @@ export default function App() {
       const payload = await result.json();
       if (!result.ok) throw new Error(payload.error);
       const fontMap: Record<string, string> = {
-        modern: "'Segoe UI', Arial, sans-serif",
-        classic: "Georgia, serif",
-        friendly: "'Trebuchet MS', sans-serif",
+        inter: "'Inter', sans-serif",
+        montserrat: "'Montserrat', sans-serif",
+        poppins: "'Poppins', sans-serif",
+        "space-grotesk": "'Space Grotesk', sans-serif",
+        playfair: "'Playfair Display', Georgia, serif",
+        georgia: "Georgia, serif",
+        segoe: "'Segoe UI', Arial, sans-serif",
+        jetbrains: "'JetBrains Mono', monospace",
       };
+      const nextTemplate = templates.find((item) => item.id === payload.design.templateId) || template;
+      const nextPattern = builtinPatterns.find((item) => item.id === payload.design.builtinPatternId);
+      const cleanLayout = initialElementLayout();
+      setActiveTemplate(nextTemplate.id);
+      setTemplateLayouts((current) => ({ ...current, [nextTemplate.id]: cleanLayout }));
+      localStorage.setItem("yolkart-element-layout", JSON.stringify(cleanLayout));
+      localStorage.setItem("yolkart-saved-layout", JSON.stringify(cleanLayout));
+      setSelectedElements([]);
       setForm((current) => ({
         ...current,
         headline: payload.design.headline,
         message: payload.design.message,
+        backgroundColor: payload.design.backgroundColor,
+        textColor: payload.design.textColor,
         accent: payload.design.accent,
         qrColor: payload.design.qrColor,
-        font: fontMap[payload.design.fontStyle] || current.font,
+        font: fontMap[payload.design.fontFamily] || current.font,
         motif: payload.design.motif,
+        builtinPatternId: nextPattern?.id,
+        backgroundImage: nextPattern ? patternDataUri(nextPattern, payload.design.accent) : "",
+        backgroundSize: "repeat",
+        showPattern: payload.design.motif !== "none" || Boolean(nextPattern),
+        accentShape: payload.design.accentShape,
+        patternDensity: payload.design.patternDensity,
+        backgroundOpacity: payload.design.backgroundOpacity,
+        overlayColor: payload.design.overlayColor,
+        overlayOpacity: payload.design.overlayOpacity,
+        qrStyle: payload.design.qrStyle,
+        textAlign: payload.design.textAlign,
+        borderWidth: payload.design.borderWidth,
+        radius: payload.design.radius,
         emergencyLabel: payload.design.emergencyLabel,
       }));
       setToast("AI tasarımı karta uygulandı");
@@ -1008,6 +1111,42 @@ export default function App() {
       setAiError(error instanceof Error ? error.message : "AI tasarımı oluşturulamadı.");
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const generateAiCardArt = async () => {
+    if (aiArtPrompt.trim().length < 4) {
+      setAiArtError("Kart görselini en az 4 karakterle tarif edin.");
+      return;
+    }
+    setAiArtLoading(true);
+    setAiArtError("");
+    try {
+      const result = await fetch("/api/ai-card-art", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: aiArtPrompt.trim() }),
+      });
+      const payload = await result.json();
+      if (!result.ok) throw new Error(payload.error);
+      setForm((current) => ({
+        ...current,
+        showPattern: true,
+        backgroundImage: payload.url,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundOpacity: 100,
+        motif: "none",
+        builtinPatternId: undefined,
+        overlayColor: current.backgroundColor,
+        overlayOpacity: 12,
+      }));
+      setToast("AI kart görseli uygulandı; gerçek QR ve bilgiler üst katmanda korundu");
+      window.setTimeout(() => setToast(""), 3200);
+    } catch (error) {
+      setAiArtError(error instanceof Error ? error.message : "Kart görseli üretilemedi.");
+    } finally {
+      setAiArtLoading(false);
     }
   };
 
@@ -1080,7 +1219,7 @@ export default function App() {
           <div className="template-list">
             {visibleTemplates.map((item) => (
               <button key={item.id} className={`template-option ${activeTemplate === item.id ? "selected" : ""}`} onClick={() => chooseTemplate(item)}>
-                <div className="template-thumb"><CardPreview form={{ ...form, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundOpacity: 12 }} template={item} compact /></div>
+                <div className="template-thumb"><CardPreview form={{ ...form, backgroundColor: item.bg, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundOpacity: 12 }} template={item} compact /></div>
                 <span>{item.label}</span>
                 {activeTemplate === item.id && <i><Check /></i>}
               </button>
@@ -1090,7 +1229,7 @@ export default function App() {
                 <h2 className="template-group-title">{group.title}</h2>
                 {group.items.map((item) => (
                   <button key={item.id} className={`template-option ${activeTemplate === item.id ? "selected" : ""}`} onClick={() => chooseTemplate(item)}>
-                    <div className="template-thumb"><CardPreview form={{ ...form, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: item.motif, backgroundOpacity: 12 }} template={item} compact /></div>
+                    <div className="template-thumb"><CardPreview form={{ ...form, backgroundColor: item.bg, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: item.motif, backgroundOpacity: 12 }} template={item} compact /></div>
                     <span>{item.label}</span>
                     {activeTemplate === item.id && <i><Check /></i>}
                   </button>
@@ -1100,7 +1239,7 @@ export default function App() {
             <h2 className="template-group-title">UI Stilleri</h2>
             {uiStyleTemplates.map((item) => (
               <button key={item.id} className={`template-option ${activeTemplate === item.id ? "selected" : ""}`} onClick={() => chooseTemplate(item)}>
-                <div className="template-thumb"><CardPreview form={{ ...form, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundOpacity: 12 }} template={item} compact /></div>
+                <div className="template-thumb"><CardPreview form={{ ...form, backgroundColor: item.bg, accent: item.accent, qrColor: item.ink, qrBackgroundMode: "card", font: item.font, motif: "none", backgroundOpacity: 12 }} template={item} compact /></div>
                 <span>{item.label}</span>
                 {activeTemplate === item.id && <i><Check /></i>}
               </button>
@@ -1156,6 +1295,7 @@ export default function App() {
                 <details className="design-section typography-section" open>
                   <summary className="section-title"><Type /><strong>Yazı ve tipografi</strong></summary>
                   <div className="color-inputs">
+                    <label><span>Arka plan</span><input type="color" value={form.backgroundColor || template.bg} onChange={(event) => update("backgroundColor", event.target.value)} /></label>
                     <label><span>{selectedElements.length ? `Seçili (${selectedElements.length})` : "Yazı rengi"}</span><input type="color" value={form.textColor || template.ink} onChange={(event) => selectedElements.length ? applySelectedTypography({ color: event.target.value }) : update("textColor", event.target.value)} /></label>
                     <label><span>Vurgu rengi</span><input type="color" value={form.accent} onChange={(event) => update("accent", event.target.value)} /></label>
                   </div>
@@ -1168,6 +1308,20 @@ export default function App() {
                   </select></label>
                   {selectedElements.length > 0 && <RangeControl label="Seçili yazı boyutu" value={selectedFontSize} min={8} max={72} unit=" px" onChange={(value) => { setSelectedFontSize(value); applySelectedTypography({ fontSize: value }); }} />}
                   <RangeControl label="Harf aralığı" value={form.letterSpacing} min={-2} max={8} unit=" px" onChange={(value) => update("letterSpacing", value)} />
+                  <div className="control-group brand-palette-block">
+                    <span>Marka renginden palet üret</span>
+                    <div className="brand-palette-row">
+                      <input type="color" value={brandColor} onChange={(event) => setBrandColor(event.target.value)} aria-label="Marka rengi" title="Marka rengini seçin" />
+                      <div className="brand-palette-swatches">
+                        {brandPalettePreview.map((p, i) => (
+                          <button key={i} type="button" className="brand-palette-chip" onClick={() => applyBrandPalette(p)} title={`Palet ${i + 1} — zemin ${p.bg}, vurgu ${p.accent}`} aria-label={`Palet ${i + 1} uygula`} style={{ background: p.bg, borderColor: p.accent }}>
+                            <span style={{ background: p.accent }} /><strong style={{ color: p.ink }}>Aa</strong>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <small className="control-hint">Tek renk seçin; kontrast-garantili zemin, yazı ve vurgu paletini otomatik uygular.</small>
+                  </div>
                   <div className="control-group"><span>Hazır vurgu renkleri</span><div className="swatches">{palettes.map((color) => <button key={color} style={{ background: color }} className={form.accent === color ? "active" : ""} onClick={() => update("accent", color)} aria-label={color} />)}</div></div>
                   <div className="control-group"><span>Metin hizası</span><div className="segmented"><button className={form.textAlign === "left" ? "active" : ""} onClick={() => update("textAlign", "left")}>Sola hizala</button><button className={form.textAlign === "center" ? "active" : ""} onClick={() => update("textAlign", "center")}>Ortala</button></div></div>
                 </details>
@@ -1181,7 +1335,7 @@ export default function App() {
                   <button className={form.qrStyle === "organic" ? "active" : ""} onClick={() => update("qrStyle", "organic")}>Organik</button>
                 </div><small className="control-hint">Köşe bulucuları korunur ve yüksek hata düzeltme kullanılır.</small></div>
                 <div className="control-group"><span>QR arka planı</span><div className="segmented"><button className={form.qrBackgroundMode === "card" ? "active" : ""} onClick={() => update("qrBackgroundMode", "card")}>Kart rengi</button><button className={form.qrBackgroundMode === "transparent" ? "active" : ""} onClick={() => update("qrBackgroundMode", "transparent")}>Şeffaf</button><button className={form.qrBackgroundMode === "white" ? "active" : ""} onClick={() => update("qrBackgroundMode", "white")}>Beyaz</button></div><small className="control-hint">Şeffaf zemin yoğun desenlerde taramayı zorlaştırabilir.</small></div>
-                <div className="control-group"><span>QR okutulunca</span><div className="segmented"><button className={form.qrTarget !== "profile" ? "active" : ""} onClick={() => update("qrTarget", "phone")}>Telefonu ara</button><button className={form.qrTarget === "profile" ? "active" : ""} onClick={() => update("qrTarget", "profile")}>Profil kartını aç</button></div><small className="control-hint">“Telefonu ara” seçeneği numarayı doğrudan cihazın arama ekranına gönderir.</small></div>
+                <div className="control-group"><span>QR okutulunca</span><div className="segmented"><button className={form.qrTarget === "phone" ? "active" : ""} onClick={() => update("qrTarget", "phone")}>Telefonu ara</button><button className={form.qrTarget === "vcard" ? "active" : ""} onClick={() => update("qrTarget", "vcard")}>Rehbere ekle</button><button className={form.qrTarget === "profile" ? "active" : ""} onClick={() => update("qrTarget", "profile")}>Profil kartını aç</button></div><small className="control-hint">“Telefonu ara” numarayı arama ekranına gönderir. “Rehbere ekle” internet gerektirmez, kişi kartını doğrudan rehbere kaydettirir. “Profil kartını aç” ad, plaka ve telefonu gösteren mobil sayfayı açar.</small></div>
                 </details>
                 <details className="design-section">
                   <summary className="section-title"><ImageIcon /><strong>Arka plan deseni</strong></summary>
@@ -1265,6 +1419,13 @@ export default function App() {
                 {aiError && <div className="inline-error">{aiError}</div>}
                 <button className="ai-generate" onClick={generateAiDesign} disabled={aiLoading}>{aiLoading ? <LoaderCircle className="spin" /> : <Sparkles />}{aiLoading ? t.generating : t.generate}</button>
                 <small className="provider-note">{aiInput.provider === "deepseek" ? `DeepSeek API - ${settings.deepseekModel}` : `OpenRouter - ${settings.openrouterModel}`}</small>
+                <div className="ai-art-card">
+                  <div className="ai-intro"><ImageIcon /><div><strong>AI kart görseli</strong><p>Arka plan sanatını üretir. İsim, telefon ve gerçek QR uygulama tarafından üstte tutulur.</p></div></div>
+                  <label className="field"><span>Görsel isteği</span><textarea value={aiArtPrompt} onChange={(event) => setAiArtPrompt(event.target.value)} placeholder="Örn. koyu lacivert, turkuaz çizgiler, modern mühendislik teması" /></label>
+                  {aiArtError && <div className="inline-error">{aiArtError}</div>}
+                  <button className="ai-generate ai-art-generate" onClick={generateAiCardArt} disabled={aiArtLoading}>{aiArtLoading ? <LoaderCircle className="spin" /> : <ImageIcon />}{aiArtLoading ? "Görsel üretiliyor" : "Kart görseli üret"}</button>
+                  <small className="provider-note">OpenRouter Image API - {settings.imageModel}</small>
+                </div>
               </div>
             )}
           </div>
@@ -1287,6 +1448,7 @@ export default function App() {
               <label className="field"><span>OpenRouter API anahtarı</span><input type="password" value={settings.openrouterKey} placeholder={settings.openrouterConfigured ? "Değiştirmek için yeni anahtar girin" : "sk-or-..."} onChange={(event) => setSettings((current) => ({ ...current, openrouterKey: event.target.value }))} /></label>
               <button className="fetch-models" type="button" onClick={() => fetchModels("openrouter")} disabled={modelsLoading === "openrouter"}>{modelsLoading === "openrouter" ? <LoaderCircle className="spin" /> : <Download />}API'den modelleri getir</button>
               {providerModels.openrouter.length ? <label className="field"><span>Model seç</span><select value={settings.openrouterModel} onChange={(event) => setSettings((current) => ({ ...current, openrouterModel: event.target.value }))}>{providerModels.openrouter.map((model) => <option key={model.id} value={model.id}>{model.name} — {model.id}</option>)}</select></label> : <Field label="Model" value={settings.openrouterModel} onChange={(value) => setSettings((current) => ({ ...current, openrouterModel: value }))} />}
+              <Field label="Görsel üretim modeli" value={settings.imageModel} onChange={(value) => setSettings((current) => ({ ...current, imageModel: value }))} hint="OpenRouter Image API model kimliği" />
             </section>
             <button className="ai-generate" onClick={saveSettings} disabled={settingsLoading}>{settingsLoading ? <LoaderCircle className="spin" /> : <Check />}{settingsLoading ? "Kaydediliyor" : "Ayarları kaydet"}</button>
             <button className="reset-design" type="button" onClick={resetToDefault}><RotateCcw /> Varsayılan tasarıma dön</button>

@@ -247,6 +247,9 @@ button { color: inherit; }
 .ai-generate { height: 44px; border: 0; border-radius: 9px; color: #fff; background: var(--accent); display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; font-size: 13px; cursor: pointer; }
 .ai-generate:disabled { opacity: .65; cursor: wait; }
 .ai-generate svg { width: 17px; }
+.ai-art-card { display: grid; gap: 12px; margin-top: 8px; padding: 14px; border: 1px solid #dbe4ef; border-radius: 13px; background: linear-gradient(145deg, #f8fbff, #f5f3ff); }
+.ai-art-card .ai-intro { background: #15234a; }
+.ai-art-generate { background: linear-gradient(135deg, #3157d5, #7c3aed); box-shadow: 0 10px 22px #5538c82b; }
 .provider-note { text-align: center; color: var(--muted); font-size: 10px; }
 .inline-error { padding: 10px 12px; border: 1px solid #f1b7b2; border-radius: 8px; color: #9a2b26; background: #fff4f3; font-size: 11px; line-height: 1.4; box-shadow: 0 4px 14px #d6392f1f; }
 .spin { animation: spin .8s linear infinite; }
@@ -849,14 +852,20 @@ details.typography-section[open] { padding: 12px; }
     repeating-conic-gradient(#ffffff0e 0% 25%, #00000012 0% 50%) 8px 8px/16px 16px;
 }
 .vehicle-card.template-voxel .card-copy { margin-top: 1.4em; }
+/* Toprak zemin uzerinde koyu yazi okunmuyordu (kontrast 2.5, acil durumda 1.6).
+   Beyaz yazi + sert ofset golge hem WCAG esigini gecer hem de blok oyun tipografisinin imzasidir. */
 .vehicle-card.template-voxel .card-copy h2 {
   font-size: clamp(11px, 1.7vh, 16px); line-height: 1.5; word-break: break-word;
-  color: #12240A; text-shadow: 0 1px 0 rgba(255, 255, 255, .3);
+  color: #FFFFFF; text-shadow: 2px 2px 0 #2A1C10;
 }
 .vehicle-card.template-voxel .card-copy p,
 .vehicle-card.template-voxel .identity div,
 .vehicle-card.template-voxel .identity .editable-plate,
-.vehicle-card.template-voxel .emergency { text-shadow: 0 1px 0 rgba(255, 255, 255, .28); }
+.vehicle-card.template-voxel .identity .editable-plate strong,
+.vehicle-card.template-voxel .emergency,
+.vehicle-card.template-voxel .emergency strong { color: #FFF3D6; text-shadow: 2px 2px 0 #2A1C10; }
+.vehicle-card.template-voxel .emergency svg,
+.vehicle-card.template-voxel .identity svg { color: #FFF3D6; }
 
 /* galaxy: derin uzay + yildiz alani + isin kilici (Star Wars esini, marka yok) */
 .vehicle-card.template-galaxy {
@@ -982,3 +991,31 @@ details.typography-section[open] { padding: 12px; }
 .vehicle-card.template-matrix .identity div,
 .vehicle-card.template-matrix .identity .editable-plate,
 .vehicle-card.template-matrix .emergency { color: #B9FFCE; text-shadow: 0 0 6px #00FF6688; }
+
+/* Marka renginden palet üretici */
+.brand-palette-row { display: flex; align-items: center; gap: 10px; }
+.brand-palette-row > input[type="color"] { width: 42px; height: 42px; padding: 0; border: none; border-radius: 10px; background: none; cursor: pointer; flex: 0 0 auto; }
+.brand-palette-swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; flex: 1 1 auto; }
+.brand-palette-chip { position: relative; display: grid; place-items: center; height: 42px; border: 2px solid; border-radius: 10px; cursor: pointer; overflow: hidden; transition: transform .12s ease; }
+.brand-palette-chip:hover { transform: translateY(-2px); }
+.brand-palette-chip > span { position: absolute; left: 5px; bottom: 5px; width: 12px; height: 12px; border-radius: 50%; }
+.brand-palette-chip > strong { font-size: 15px; font-weight: 800; line-height: 1; }
+
+/* Tasma korumasi: dikey flex formatlarda alt bloklar (araç sahibi/plaka ve acil durum)
+   yerlerini her zaman ayirir; baski altinda ust bloklar (baslik ve QR) kuculur.
+   Boylece hicbir sablonda alttaki bilgiler karttan tasip kirpilmaz. */
+.vehicle-card:not(.compact-card):not(.format-id):not(.format-badge) > .card-copy { flex: 0 1 auto; min-height: 0; }
+.vehicle-card:not(.compact-card):not(.format-id):not(.format-badge) > .scan-row { flex: 0 1 auto; min-height: 0; }
+.vehicle-card:not(.compact-card):not(.format-id):not(.format-badge) > .identity { flex: 0 0 auto; }
+.vehicle-card:not(.compact-card):not(.format-id):not(.format-badge) > .editable-emergency { flex: 0 0 auto; margin-top: auto; }
+.vehicle-card:not(.compact-card):not(.format-id):not(.format-badge) > .scan-row .qr-block svg { max-height: 100%; }
+
+/* Acil durum satiri kartin islevsel olarak en kritik yazisi (aranacak numara).
+   Bu sablonlarda vurgu rengi zemine karsi 3:1'in altinda kaliyordu; tonu koruyup
+   govde rengiyle karistirarak WCAG 4.5:1 esigine cikariyoruz. Oranlar olculerek secildi. */
+.vehicle-card.template-mediterranean .emergency { color: color-mix(in srgb, var(--accent) 50%, var(--ink)); }
+.vehicle-card.template-cream .emergency { color: color-mix(in srgb, var(--accent) 45%, var(--ink)); }
+.vehicle-card.template-neomint .emergency { color: color-mix(in srgb, var(--accent) 65%, var(--ink)); }
+.vehicle-card.template-parkalert .emergency { color: color-mix(in srgb, var(--accent) 75%, var(--ink)); }
+.vehicle-card.template-cassette .emergency { color: color-mix(in srgb, var(--accent) 65%, var(--ink)); }
+.vehicle-card.template-popart .emergency { color: var(--ink); }

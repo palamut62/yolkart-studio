@@ -9,9 +9,11 @@ const port = Number(process.env.PORT || 4173);
 const dataDirectory = path.join(root, ".data");
 const settingsPath = path.join(dataDirectory, "provider-settings.json");
 const patternsDirectory = path.join(dataDirectory, "patterns");
+const cardArtDirectory = path.join(dataDirectory, "card-art");
 const patternIndexPath = path.join(patternsDirectory, "index.json");
 const profilesPath = path.join(dataDirectory, "profiles.json");
 const patternFileRegex = /^pat-\d+\.(png|jpe?g|webp)$/;
+const cardArtFileRegex = /^card-art-\d+\.(png|jpe?g|webp)$/;
 
 const readProfiles = () => {
   try {
@@ -76,6 +78,7 @@ const providerSettings = () => {
     defaultProvider: saved.defaultProvider || "deepseek",
     deepseekModel: saved.deepseekModel || process.env.DEEPSEEK_MODEL || "deepseek-chat",
     openrouterModel: saved.openrouterModel || process.env.OPENROUTER_MODEL || "deepseek/deepseek-chat",
+    imageModel: saved.imageModel || process.env.OPENROUTER_IMAGE_MODEL || "bytedance-seed/seedream-4.5",
     deepseekKey: saved.deepseekKey || process.env.DEEPSEEK_API_KEY || "",
     openrouterKey: saved.openrouterKey || process.env.OPENROUTER_API_KEY || "",
   };
@@ -294,6 +297,7 @@ app.get("/api/settings", (_request, response) => {
     defaultProvider: settings.defaultProvider,
     deepseekModel: settings.deepseekModel,
     openrouterModel: settings.openrouterModel,
+    imageModel: settings.imageModel,
     deepseekConfigured: Boolean(settings.deepseekKey),
     openrouterConfigured: Boolean(settings.openrouterKey),
   });
@@ -301,15 +305,16 @@ app.get("/api/settings", (_request, response) => {
 
 app.post("/api/settings", (request, response) => {
   const persisted = readSettings();
-  const { defaultProvider, deepseekModel, openrouterModel, deepseekKey, openrouterKey } = request.body ?? {};
+  const { defaultProvider, deepseekModel, openrouterModel, imageModel, deepseekKey, openrouterKey } = request.body ?? {};
   const validModel = (value) => typeof value === "string" && /^[a-zA-Z0-9._:/-]{2,100}$/.test(value);
-  if (!["deepseek", "openrouter"].includes(defaultProvider) || !validModel(deepseekModel) || !validModel(openrouterModel)) {
+  if (!["deepseek", "openrouter"].includes(defaultProvider) || !validModel(deepseekModel) || !validModel(openrouterModel) || !validModel(imageModel)) {
     return response.status(400).json({ error: "Sağlayıcı veya model bilgisi geçersiz." });
   }
   const saved = {
     defaultProvider,
     deepseekModel,
     openrouterModel,
+    imageModel,
     deepseekKey: typeof deepseekKey === "string" && deepseekKey.trim() ? deepseekKey.trim() : persisted.deepseekKey || "",
     openrouterKey: typeof openrouterKey === "string" && openrouterKey.trim() ? openrouterKey.trim() : persisted.openrouterKey || "",
   };
@@ -319,6 +324,7 @@ app.post("/api/settings", (request, response) => {
     defaultProvider: saved.defaultProvider,
     deepseekModel: saved.deepseekModel,
     openrouterModel: saved.openrouterModel,
+    imageModel: saved.imageModel,
     deepseekConfigured: Boolean(saved.deepseekKey || process.env.DEEPSEEK_API_KEY),
     openrouterConfigured: Boolean(saved.openrouterKey || process.env.OPENROUTER_API_KEY),
   });
@@ -364,25 +370,41 @@ app.post("/api/ai-design", async (request, response) => {
     return response.status(400).json({ error: "En az bir kişiselleştirme bilgisi girin." });
   }
 
+  const templateIds = ["minimal", "night", "energy", "classic", "kilim", "bosphorus", "aegean", "cappadocia", "blacksea", "mediterranean", "retro", "technical", "teacher", "health", "engineer", "monochrome", "pastel", "neon", "nature", "premium", "charcoal", "executive", "cream", "blueprint", "neomint", "gothic", "pop", "postcard", "saas", "parkalert", "ui-glass", "ui-darkdev", "ui-command", "ui-neumorph", "ui-fluent", "ui-terminal", "ui-workspace", "ui-cyberpunk", "ui-brutal", "ui-clay", "racing", "boarding", "highway", "kilimmodern", "iznik", "sunset"];
+  const patternIds = ["none", "cintemani", "elibelinde", "kocboynuzu", "nazar", "kilim-zigzag", "grid-dots", "hex-honeycomb", "triangle-mosaic", "cross-lines", "pixel-blocks", "iso-cubes", "pixel-checker", "film-strip", "sunburst", "leaf-branch", "waves"];
+  const fontFamilies = ["inter", "montserrat", "poppins", "space-grotesk", "playfair", "georgia", "segoe", "jetbrains"];
   const schema = {
     name: "vehicle_card_design",
     strict: true,
     schema: {
       type: "object",
       additionalProperties: false,
-      required: ["headline", "message", "accent", "qrColor", "fontStyle", "motif", "emergencyLabel"],
+      required: ["headline", "message", "templateId", "backgroundColor", "textColor", "accent", "qrColor", "fontFamily", "motif", "builtinPatternId", "accentShape", "patternDensity", "backgroundOpacity", "overlayColor", "overlayOpacity", "qrStyle", "textAlign", "borderWidth", "radius", "emergencyLabel"],
       properties: {
-        headline: { type: "string", maxLength: 42 },
-        message: { type: "string", maxLength: 90 },
+        headline: { type: "string", maxLength: 42, description: "Vehicle contact call-to-action. Never a person's name or profession alone." },
+        message: { type: "string", maxLength: 90, description: "Short instruction explaining that scanning or tapping contacts the vehicle owner." },
         accent: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
         qrColor: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
-        fontStyle: { type: "string", enum: ["modern", "classic", "friendly"] },
+        templateId: { type: "string", enum: templateIds },
+        backgroundColor: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
+        textColor: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
+        fontFamily: { type: "string", enum: fontFamilies },
         motif: { type: "string", enum: ["geometric", "kilim", "waves", "city-lines", "floral", "none"] },
-        emergencyLabel: { type: "string", maxLength: 36 },
+        builtinPatternId: { type: "string", enum: patternIds },
+        accentShape: { type: "string", enum: ["default", "circle", "ring", "blob", "ribbon", "stripe", "wave", "none"] },
+        patternDensity: { type: "integer", minimum: 1, maximum: 12 },
+        backgroundOpacity: { type: "integer", minimum: 5, maximum: 45 },
+        overlayColor: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
+        overlayOpacity: { type: "integer", minimum: 0, maximum: 55 },
+        qrStyle: { type: "string", enum: ["square", "rounded", "dots", "organic"] },
+        textAlign: { type: "string", enum: ["left", "center"] },
+        borderWidth: { type: "integer", minimum: 0, maximum: 8 },
+        radius: { type: "integer", minimum: 0, maximum: 32 },
+        emergencyLabel: { type: "string", maxLength: 36, description: "Natural human-readable emergency call label, never snake_case." },
       },
     },
   };
-  const systemPrompt = `You are a Turkish vehicle contact-card art director. Create concise, warm, print-safe copy and a coherent visual recipe. Use profession and city only as respectful inspiration. Avoid stereotypes, police impersonation, official emblems, political/religious symbols, harassment, sensitive personal data, and claims of authority. For Turkish cities, prefer abstract local craft, kilim, architecture, landscape, or rhythm motifs. Output only valid JSON in ${language === "en" ? "English" : "Turkish"} with exactly these keys: headline, message, accent, qrColor, fontStyle, motif, emergencyLabel. accent and qrColor must be 6-digit hex colors. fontStyle must be modern, classic, or friendly. motif must be geometric, kilim, waves, city-lines, floral, or none. Return ONLY the JSON object. No prose. No markdown fences. Example output: {"headline":"ARACIMA ULAŞIN","message":"QR'ı okutun, size hemen döneyim.","accent":"#1F6FEB","qrColor":"#0B1220","fontStyle":"modern","motif":"geometric","emergencyLabel":"Acil durumda arayın"}`;
+  const systemPrompt = `You are a Turkish vehicle contact-card art director. Turn the user's profession, city, tone and request into one coherent, print-safe card recipe. Never invent a person's name, phone, plate, company or other personal data. headline must be a vehicle-owner contact call-to-action, not a name or profession. message must explain scanning/tapping to contact the vehicle owner. emergencyLabel must be natural readable language with spaces, never snake_case. Choose only values from the supplied JSON schema. Use local culture respectfully and abstractly. Keep QR contrast high: qrColor must strongly contrast backgroundColor. Avoid official emblems, authority impersonation, political/religious symbols, harassment and sensitive data. Use either one restrained motif or one builtin pattern; when builtinPatternId is not none, set motif to none. Available template IDs represent real application skins; choose the closest fit. Output only valid JSON in ${language === "en" ? "English" : "Turkish"} matching every schema key. No prose and no markdown.`;
   const endpoint = directDeepSeek
     ? "https://api.deepseek.com/chat/completions"
     : "https://openrouter.ai/api/v1/chat/completions";
@@ -416,7 +438,7 @@ app.post("/api/ai-design", async (request, response) => {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (attempt === 1) {
         requestBody.response_format = { type: "json_object" };
-        requestBody.messages[1].content = `${originalUserContent}\nReturn ONLY a JSON object with keys headline, message, accent, qrColor, fontStyle, motif, emergencyLabel. No prose, no markdown.`;
+        requestBody.messages[1].content = `${originalUserContent}\nReturn ONLY one complete JSON object matching every requested design field. No prose, no markdown.`;
       }
       const aiResponse = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(60000) });
       const responseText = await aiResponse.text();
@@ -444,7 +466,6 @@ app.post("/api/ai-design", async (request, response) => {
       return response.status(502).json({ error: "AI tasarımı üretilemedi. Lütfen tekrar deneyin veya farklı bir model seçin (örn. deepseek-chat)." });
     }
 
-    const allowedFonts = ["modern", "classic", "friendly"];
     const allowedMotifs = ["geometric", "kilim", "waves", "city-lines", "floral", "none"];
     const validColor = (value) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
     const findHex = (value) => {
@@ -467,36 +488,51 @@ app.post("/api/ai-design", async (request, response) => {
       design.headline = derived || "ARACIMA ULAŞIN";
     }
     design.headline = String(design.headline).slice(0, 60);
+    if (!/(ulaş|ulas|iletiş|iletis|araç|arac|contact|reach|vehicle)/i.test(design.headline)) {
+      design.headline = language === "en" ? "CONTACT THE VEHICLE OWNER" : "ARAÇ SAHİBİNE ULAŞIN";
+    }
 
     // message
     if (typeof design.message !== "string" || !design.message.trim()) {
       design.message = "QR kodu okutun veya telefonunuzu yaklaştırın.";
     }
     design.message = String(design.message).slice(0, 120);
+    if (!/(qr|tara|yaklaştır|yaklastir|telefon|scan|tap|phone|contact)/i.test(design.message)) {
+      design.message = language === "en" ? "Scan the QR code or bring your phone closer." : "QR kodu tarayın veya telefonunuzu yaklaştırın.";
+    }
 
     // emergencyLabel
     if (typeof design.emergencyLabel !== "string" || !design.emergencyLabel.trim()) {
       design.emergencyLabel = "Acil durumda arayın";
     }
-    design.emergencyLabel = String(design.emergencyLabel).slice(0, 48);
+    design.emergencyLabel = String(design.emergencyLabel).replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 48);
 
     // accent
     if (!validColor(design.accent)) {
       design.accent = findHex(design.accent) || paletteAccent();
     }
+    if (!validColor(design.backgroundColor)) design.backgroundColor = "#FFFFFF";
+    if (!validColor(design.textColor)) design.textColor = "#101828";
+    if (!validColor(design.overlayColor)) design.overlayColor = design.backgroundColor;
 
     // qrColor
     if (!validColor(design.qrColor)) {
       design.qrColor = findHex(design.qrColor) || "#0B1220";
     }
 
-    // fontStyle
-    if (!allowedFonts.includes(design.fontStyle)) {
-      const font = String(design.fontStyle || "").toLowerCase();
-      if (/serif|klasik|classic/.test(font)) design.fontStyle = "classic";
-      else if (/samimi|rounded|friendly|dost/.test(font)) design.fontStyle = "friendly";
-      else design.fontStyle = "modern";
-    }
+    if (!templateIds.includes(design.templateId)) design.templateId = "minimal";
+    if (!fontFamilies.includes(design.fontFamily)) design.fontFamily = "inter";
+    if (!patternIds.includes(design.builtinPatternId)) design.builtinPatternId = "none";
+    if (design.builtinPatternId !== "none") design.motif = "none";
+    if (!["default", "circle", "ring", "blob", "ribbon", "stripe", "wave", "none"].includes(design.accentShape)) design.accentShape = "default";
+    if (!["square", "rounded", "dots", "organic"].includes(design.qrStyle)) design.qrStyle = "square";
+    if (!["left", "center"].includes(design.textAlign)) design.textAlign = "left";
+    const clampInteger = (value, min, max, fallback) => Number.isInteger(value) ? Math.min(max, Math.max(min, value)) : fallback;
+    design.patternDensity = clampInteger(design.patternDensity, 1, 12, 5);
+    design.backgroundOpacity = clampInteger(design.backgroundOpacity, 5, 45, 14);
+    design.overlayOpacity = clampInteger(design.overlayOpacity, 0, 55, 0);
+    design.borderWidth = clampInteger(design.borderWidth, 0, 8, 0);
+    design.radius = clampInteger(design.radius, 0, 32, 18);
 
     // motif
     if (!allowedMotifs.includes(design.motif)) {
@@ -583,6 +619,61 @@ app.post("/api/ai-pattern", async (request, response) => {
     const detail = error instanceof Error ? error.message : "Bilinmeyen bağlantı hatası";
     return response.status(502).json({ error: `AI bağlantısı kurulamadı: ${detail}` });
   }
+});
+
+app.post("/api/ai-card-art", async (request, response) => {
+  const settings = providerSettings();
+  if (!settings.openrouterKey) return response.status(503).json({ error: "Görsel üretmek için OpenRouter API anahtarı gerekli." });
+  const prompt = String(request.body?.prompt || "").trim();
+  if (prompt.length < 4 || prompt.length > 800) return response.status(400).json({ error: "Görsel isteği 4-800 karakter olmalı." });
+  const artPrompt = `Full-bleed abstract decorative background texture for a portrait vehicle contact card, 2:3 aspect ratio. ${prompt}. Background texture only, edge-to-edge. No card mockup, no interface, no content panels, no white placeholder boxes, no labels and no reserved QR area. Absolutely no text, letters, glyphs, numbers, logos, icons, QR codes, barcodes, NFC symbols, watermarks, official emblems, license plates or realistic documents. Professional flat graphic design, restrained detail, subtle contrast so real content can be overlaid later.`;
+  try {
+    const imageResponse = await fetch("https://openrouter.ai/api/v1/images", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${settings.openrouterKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": request.get("origin") || "http://localhost",
+        "X-Title": "YolKart Studio",
+      },
+      body: JSON.stringify({
+        model: settings.imageModel,
+        prompt: artPrompt,
+        n: 1,
+        resolution: "4K",
+        aspect_ratio: "2:3",
+        quality: "high",
+        output_format: "png",
+        background: "opaque",
+      }),
+      signal: AbortSignal.timeout(180000),
+    });
+    const payload = await imageResponse.json().catch(() => ({}));
+    if (!imageResponse.ok) {
+      return response.status(502).json({ error: `Görsel modeli hatası: ${payload?.error?.message || `HTTP ${imageResponse.status}`}` });
+    }
+    const image = payload?.data?.[0];
+    if (typeof image?.b64_json !== "string" || !image.b64_json) return response.status(502).json({ error: "Görsel modeli resim döndürmedi." });
+    const mediaType = typeof image.media_type === "string" ? image.media_type : "image/png";
+    const extension = mediaType.includes("webp") ? "webp" : mediaType.includes("jpeg") || mediaType.includes("jpg") ? "jpeg" : "png";
+    const bytes = Buffer.from(image.b64_json, "base64");
+    if (!bytes.length || bytes.length > 12_000_000) return response.status(502).json({ error: "Üretilen görsel boyutu geçersiz." });
+    const file = `card-art-${Date.now()}.${extension}`;
+    fs.mkdirSync(cardArtDirectory, { recursive: true });
+    fs.writeFileSync(path.join(cardArtDirectory, file), bytes);
+    return response.json({ ok: true, url: `/api/card-art/${file}`, model: settings.imageModel });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Bağlantı hatası";
+    return response.status(502).json({ error: `Kart görseli üretilemedi: ${detail}` });
+  }
+});
+
+app.get("/api/card-art/:file", (request, response) => {
+  const file = request.params.file;
+  if (!cardArtFileRegex.test(file)) return response.status(404).end();
+  return response.sendFile(file, { root: cardArtDirectory, headers: { "Cache-Control": "public, max-age=31536000" } }, (error) => {
+    if (error && !response.headersSent) response.status(404).end();
+  });
 });
 
 app.get("/api/saved-patterns", (_request, response) => {
