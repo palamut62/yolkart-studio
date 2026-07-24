@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.data/
+.vite/
+*.tsbuildinfo
+AGENTS.md
+.codex/
+.claude/
+CLAUDE.md
+.playwright-cli/
+output/
+server-run.log
+design-concept.png
+template-library-concept.png
+implementation-final.png
