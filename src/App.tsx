@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Download,
+  FileText,
   Globe2,
   LoaderCircle,
   Minus,
@@ -98,6 +99,7 @@ type CardElementId = "background" | "accent" | "motif" | "headline" | "message" 
 type InlineTextStyle = { start: number; end: number; color?: string; fontFamily?: string; fontSize?: number };
 type ElementLayout = Record<CardElementId, { x: number; y: number; scale: number; hidden: boolean; color?: string; fontFamily?: string; fontSize?: number; inlineStyles?: InlineTextStyle[] }>;
 type SavedTemplate = { template: CardTemplate; form: FormState; layout: ElementLayout };
+type PrintCardImage = { key: string; dataUrl: string; background: string };
 const initialElementLayout = (): ElementLayout => ({
   background: { x: 0, y: 0, scale: 1, hidden: false },
   accent: { x: 0, y: 0, scale: 1, hidden: false },
@@ -383,6 +385,8 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
   const cardFormat = form.cardFormat || "vehicle";
   const [selected, setSelected] = useState<CardElementId[]>([]);
   const [layout, setLayout] = useState<ElementLayout>(() => compact ? normalizeElementLayout(initialLayout) : normalizeElementLayout(initialLayout));
+  const cardBoundsRef = useRef<HTMLDivElement>(null);
+  const elementNodes = useRef<Partial<Record<CardElementId, HTMLElement | null>>>({});
   const textSelectionRef = useRef<{ id: CardElementId; start: number; end: number } | null>(null);
   const labels: Record<CardElementId, string> = { background: "Arka plan görseli", accent: "Dekoratif şekil", motif: "Arka plan deseni", headline: "Başlık", message: "Açıklama", scanPanel: "QR ve NFC paneli", qr: "QR kod", nfc: "NFC işareti", dividerTop: "Üst yatay çizgi", owner: "Araç sahibi", plate: "Plaka", dividerBottom: "Alt yatay çizgi", emergency: "Acil durum bilgisi" };
   const elementStyle = (id: CardElementId) => ({
@@ -394,6 +398,7 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
     "--ink": layout[id].color || form.textColor || template.ink,
   } as React.CSSProperties);
   const elementProps = (id: CardElementId) => compact ? { style: elementStyle(id) } : {
+    ref: (node: HTMLElement | null) => { elementNodes.current[id] = node; },
     className: `editable-element editable-${id} ${selected.includes(id) ? "selected-element" : ""}`,
     style: elementStyle(id),
     onPointerDown: (event: React.PointerEvent<HTMLElement>) => {
@@ -504,6 +509,47 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
     return () => window.clearTimeout(timeout);
   }, [compact, layout, onLayoutChange]);
 
+  // Kart dışına taşan elemanları çalışma anında geri çek (transform reflow yapmaz, CSS yetmez)
+  useEffect(() => {
+    if (compact) return;
+    const card = cardBoundsRef.current;
+    if (!card) return;
+    const cardRect = card.getBoundingClientRect();
+    if (!cardRect.width || !cardRect.height) return;
+    const scaleFactor = (zoom || 100) / 100;
+    let changed = false;
+    const next = { ...layout };
+    (Object.keys(elementNodes.current) as CardElementId[]).forEach((id) => {
+      if (id === "background" || id === "accent" || id === "motif") return; // tam kart katmanlari
+      const node = elementNodes.current[id];
+      const current = layout[id];
+      if (!node || !current || current.hidden) return;
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      // Eleman karttan buyukse once olcegi sigacak sekilde kucult
+      const curScale = current.scale ?? 1;
+      const fit = Math.min(1, (cardRect.width - 8) / rect.width, (cardRect.height - 8) / rect.height);
+      if (fit < 0.995 && curScale > 0.2) {
+        next[id] = { ...current, scale: Math.max(0.2, curScale * fit) };
+        changed = true;
+        return; // yeni olcumle bir sonraki turda konum duzeltilir
+      }
+      const shift = (start: number, end: number, min: number, max: number) => {
+        if (end - start > max - min) return min - start;
+        if (start < min) return min - start;
+        if (end > max) return max - end;
+        return 0;
+      };
+      const dx = shift(rect.left, rect.right, cardRect.left, cardRect.right);
+      const dy = shift(rect.top, rect.bottom, cardRect.top, cardRect.bottom);
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+        next[id] = { ...current, x: (current.x ?? 0) + dx / scaleFactor, y: (current.y ?? 0) + dy / scaleFactor };
+        changed = true;
+      }
+    });
+    if (changed) setLayout(next);
+  }, [compact, layout, zoom]);
+
   useEffect(() => {
     if (!compact) onSelectionChange?.(selected);
   }, [compact, onSelectionChange, selected]);
@@ -558,7 +604,7 @@ function CardPreview({ form, template, compact = false, zoom = 100, resetVersion
 
   return (
     <div className={`card-stage ${compact ? "compact-stage" : ""}`}>
-    <div className={`vehicle-card format-${cardFormat} template-${template.id} align-${form.textAlign} ${form.showPattern !== false && form.backgroundImage ? "has-custom-background" : ""} ${compact ? "compact-card" : "is-editing"}`} onPointerDown={() => !compact && setSelected(form.showPattern !== false && form.backgroundImage ? ["background"] : [])} style={{ "--card-bg": cardBackground, "--accent": form.accent || template.accent, "--ink": form.textColor || template.ink, "--letter-spacing": `${form.letterSpacing}px`, "--pattern-unit": `${Math.round(190 / form.patternDensity)}px`, "--image-repeat-size": `${Math.round(720 / form.patternDensity)}px`, "--pattern-opacity": form.backgroundOpacity / 100, fontFamily: form.font || template.font, borderRadius: form.radius, outline: form.borderWidth ? `${form.borderWidth}px solid ${form.accent}` : undefined, outlineOffset: form.borderWidth ? -form.borderWidth : undefined } as React.CSSProperties}>
+    <div ref={cardBoundsRef} className={`vehicle-card format-${cardFormat} template-${template.id} align-${form.textAlign} ${form.showPattern !== false && form.backgroundImage ? "has-custom-background" : ""} ${compact ? "compact-card" : "is-editing"}`} onPointerDown={() => !compact && setSelected(form.showPattern !== false && form.backgroundImage ? ["background"] : [])} style={{ "--card-bg": cardBackground, "--accent": form.accent || template.accent, "--ink": form.textColor || template.ink, "--letter-spacing": `${form.letterSpacing}px`, "--pattern-unit": `${Math.round(190 / form.patternDensity)}px`, "--image-repeat-size": `${Math.round(720 / form.patternDensity)}px`, "--pattern-opacity": form.backgroundOpacity / 100, fontFamily: form.font || template.font, borderRadius: form.radius, outline: form.borderWidth ? `${form.borderWidth}px solid ${form.accent}` : undefined, outlineOffset: form.borderWidth ? -form.borderWidth : undefined } as React.CSSProperties}>
       {form.showPattern !== false && form.backgroundImage && visible("background") && <div {...elementProps("background")}><div className={`custom-background size-${form.backgroundSize}`} style={{ backgroundImage: `url("${form.backgroundImage.replace(/"/g, "%22")}")`, backgroundPosition: form.backgroundPosition, opacity: form.backgroundOpacity / 100 }} /></div>}
       {form.overlayOpacity > 0 && <div className="background-overlay" style={{ background: form.overlayColor, opacity: form.overlayOpacity / 100 }} />}
       {(form.accentShape || "default") !== "none" && visible("accent") && (() => {
@@ -606,6 +652,9 @@ export default function App() {
   const [resetVersion, setResetVersion] = useState(0);
   const [tab, setTab] = useState<"content" | "design" | "ai">("content");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState<"" | "png" | "pdf" | "mixed">("");
+  const [selectedPrintCardIds, setSelectedPrintCardIds] = useState<string[]>(["current"]);
   const [templatesOpen, setTemplatesOpen] = useState(true);
   const [selectedElements, setSelectedElements] = useState<CardElementId[]>([]);
   const [selectedFontSize, setSelectedFontSize] = useState(18);
@@ -717,6 +766,7 @@ export default function App() {
     accentShape: "default",
   });
   const cardRef = useRef<HTMLDivElement>(null);
+  const savedPrintCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const defaultFormRef = useRef(form);
   const templatesPanelRef = useRef<HTMLElement>(null);
   const t = copy.tr;
@@ -726,6 +776,7 @@ export default function App() {
   const uiStyleTemplates = useMemo(() => templates.filter((item) => uiStyleTemplateIds.includes(item.id)), []);
   const funTemplates = useMemo(() => funTemplateGroups.map((g) => ({ title: g.title, items: templates.filter((t) => g.ids.includes(t.id)) })), []);
   const visibleCustomTemplates = useMemo(() => customTemplates.filter((item) => (item.form.cardFormat || "vehicle") === (form.cardFormat || "vehicle")), [customTemplates, form.cardFormat]);
+  const printableSavedTemplates = useMemo(() => customTemplates.filter((item) => (item.form.cardFormat || "vehicle") === "vehicle" && item.template.id !== activeTemplate), [activeTemplate, customTemplates]);
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((current) => ({ ...current, [key]: value }));
   const applySelectedTypography = (style: { color?: string; fontFamily?: string; fontSize?: number }) => {
     window.dispatchEvent(new CustomEvent("yolkart-apply-selected-style", { detail: style }));
@@ -1169,29 +1220,164 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2800);
   };
 
-  const exportCard = async () => {
-    if (!cardRef.current) return;
+  const captureCardNode = async (node: HTMLDivElement | null, dimensions: { width: number; height: number }) => {
+    if (!node) throw new Error("Kart önizlemesi bulunamadı.");
+    document.body.classList.add("exporting-card");
     try {
-      const dimensions = exportDimensions[form.cardFormat || "vehicle"];
-      document.body.classList.add("exporting-card");
-      const dataUrl = await toPng(cardRef.current, {
+      // Yazi tipleri yuklenmeden yakalanirsa PNG'de yedek font/bos metin cikiyor
+      if (document.fonts?.ready) await document.fonts.ready;
+      const options = {
         pixelRatio: 1,
         canvasWidth: dimensions.width,
         canvasHeight: dimensions.height,
         cacheBust: true,
-        filter: (node) => !(node instanceof HTMLElement && node.dataset.exportIgnore === "true"),
-      });
+        filter: (node: HTMLElement) => !(node instanceof HTMLElement && node.dataset.exportIgnore === "true"),
+      };
+      // html-to-image'in bilinen davranisi: ilk cagri gorsel/font kaynaklarini
+      // onbellege alir, ikinci cagri tam sonucu verir.
+      await toPng(node, options);
+      return await toPng(node, options);
+    } finally {
+      document.body.classList.remove("exporting-card");
+    }
+  };
+
+  const saveA4PrintSheet = async (cards: PrintCardImage[], fileName: string, title: string) => {
+    const { jsPDF } = await import("jspdf");
+    const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    const pageWidth = 297;
+    const pageHeight = 210;
+    const bleedWidth = 69;
+    const bleedHeight = 100;
+    const trimInsetX = 2;
+    const trimInsetY = 3;
+    const columnGap = 4;
+    const rowGap = 6;
+    const startX = (pageWidth - (bleedWidth * 3 + columnGap * 2)) / 2;
+    const startY = (pageHeight - (bleedHeight * 2 + rowGap)) / 2;
+
+    pdf.setProperties({
+      title,
+      subject: "65 x 94 mm kesim olculu arac kartlari",
+      creator: "YolKart Studio",
+    });
+    pdf.setLineWidth(0.18);
+    pdf.setDrawColor(35, 35, 35);
+
+    const drawCropMarks = (trimX: number, trimY: number) => {
+      const trimWidth = 65;
+      const trimHeight = 94;
+      const markLength = 1.5;
+      const markGap = 0.3;
+      const right = trimX + trimWidth;
+      const bottom = trimY + trimHeight;
+      pdf.line(trimX - markLength, trimY, trimX - markGap, trimY);
+      pdf.line(trimX, trimY - markLength, trimX, trimY - markGap);
+      pdf.line(right + markGap, trimY, right + markLength, trimY);
+      pdf.line(right, trimY - markLength, right, trimY - markGap);
+      pdf.line(trimX - markLength, bottom, trimX - markGap, bottom);
+      pdf.line(trimX, bottom + markGap, trimX, bottom + markLength);
+      pdf.line(right + markGap, bottom, right + markLength, bottom);
+      pdf.line(right, bottom + markGap, right, bottom + markLength);
+    };
+
+    cards.slice(0, 6).forEach((card, index) => {
+      const row = Math.floor(index / 3);
+      const column = index % 3;
+      const x = startX + column * (bleedWidth + columnGap);
+      const y = startY + row * (bleedHeight + rowGap);
+      const imageAlias = `yolkart-${card.key.replace(/[^a-z0-9_-]/gi, "_")}`;
+      pdf.setFillColor(card.background);
+      pdf.rect(x, y, bleedWidth, bleedHeight, "F");
+      pdf.addImage(card.dataUrl, "PNG", x, y, bleedWidth, bleedHeight, imageAlias, "FAST");
+      drawCropMarks(x + trimInsetX, y + trimInsetY);
+    });
+
+    pdf.save(fileName);
+  };
+
+  const togglePrintCard = (id: string) => {
+    setSelectedPrintCardIds((current) => current.includes(id)
+      ? current.filter((item) => item !== id)
+      : current.length < 6 ? [...current, id] : current);
+  };
+
+  const exportCard = async () => {
+    try {
+      setExporting("png");
+      const dimensions = exportDimensions[form.cardFormat || "vehicle"];
+      const dataUrl = await captureCardNode(cardRef.current, dimensions);
       const link = document.createElement("a");
       link.download = `yolkart-${form.plate.replace(/\s+/g, "-").toLowerCase()}-${dimensions.label}.png`;
       link.href = dataUrl;
       link.click();
+      setExportOpen(false);
       setToast(t.downloaded);
     } catch {
       setToast(form.language === "tr" ? "Kart indirilemedi. Tekrar deneyin." : "Card could not be downloaded. Try again.");
     } finally {
-      document.body.classList.remove("exporting-card");
+      setExporting("");
     }
     window.setTimeout(() => setToast(""), 2600);
+  };
+
+  const exportA4PrintSheet = async () => {
+    if ((form.cardFormat || "vehicle") !== "vehicle") return;
+    try {
+      setExporting("pdf");
+      const cardDataUrl = await captureCardNode(cardRef.current, exportDimensions.vehicle);
+      const cardBackground = form.backgroundColor || template.bg;
+      const filePlate = form.plate.replace(/\s+/g, "-").toLocaleLowerCase("tr-TR");
+      await saveA4PrintSheet(
+        Array.from({ length: 6 }, () => ({ key: "current", dataUrl: cardDataUrl, background: cardBackground })),
+        `yolkart-${filePlate}-a4-6li-65x94mm.pdf`,
+        `YolKart ${form.plate} - 6'li A4 baski`,
+      );
+      setExportOpen(false);
+      setToast("6 kartlı A4 baskı PDF'i indirildi");
+    } catch {
+      setToast("A4 baskı PDF'i oluşturulamadı. Tekrar deneyin.");
+    } finally {
+      setExporting("");
+    }
+    window.setTimeout(() => setToast(""), 3000);
+  };
+
+  const exportMixedA4PrintSheet = async () => {
+    try {
+      setExporting("mixed");
+      const selectedCards = selectedPrintCardIds.map((id) => {
+        if (id === "current" && (form.cardFormat || "vehicle") === "vehicle") {
+          return { id, form, template, node: cardRef.current };
+        }
+        const saved = printableSavedTemplates.find((item) => item.template.id === id);
+        return saved ? { id, form: saved.form, template: saved.template, node: savedPrintCardRefs.current[id] } : null;
+      }).filter((item): item is { id: string; form: FormState; template: CardTemplate; node: HTMLDivElement | null } => Boolean(item));
+
+      if (!selectedCards.length) {
+        setToast("Karışık baskı için en az bir araç kartı seçin.");
+        window.setTimeout(() => setToast(""), 2600);
+        return;
+      }
+
+      const images: PrintCardImage[] = [];
+      for (const card of selectedCards) {
+        images.push({
+          key: card.id,
+          dataUrl: await captureCardNode(card.node, exportDimensions.vehicle),
+          background: card.form.backgroundColor || card.template.bg,
+        });
+      }
+      const slots = Array.from({ length: 6 }, (_, index) => images[index % images.length]);
+      await saveA4PrintSheet(slots, "yolkart-karisik-araclar-a4-6li-65x94mm.pdf", "YolKart - karisik araclar A4 baski");
+      setExportOpen(false);
+      setToast(`${images.length} farklı kart 6 baskı yuvasına yerleştirildi`);
+    } catch {
+      setToast("Karışık A4 baskı PDF'i oluşturulamadı. Tekrar deneyin.");
+    } finally {
+      setExporting("");
+    }
+    window.setTimeout(() => setToast(""), 3200);
   };
 
   return (
@@ -1201,7 +1387,7 @@ export default function App() {
         <div className="save-state"><Check />{t.saved}</div>
         <div className="top-actions">
           <button className="language-button lang-toggle" title="Kart dili" aria-label="Kart dili değiştir" onClick={() => setCardLanguage(form.language === "tr" ? "en" : "tr")}><Globe2 /><span>{form.language === "tr" ? "TR" : "EN"}</span></button>
-          <button className="export-button" onClick={exportCard}><Download />{t.export}</button>
+          <button className="export-button" onClick={() => setExportOpen(true)}><Download />{t.export}</button>
         </div>
       </header>
 
@@ -1431,6 +1617,57 @@ export default function App() {
           </div>
         </aside>
       </section>
+      <div className="export-source-deck" aria-hidden="true">
+        {printableSavedTemplates.map((saved) => (
+          <div key={saved.template.id} ref={(node) => { savedPrintCardRefs.current[saved.template.id] = node; }}>
+            <CardPreview form={saved.form} template={saved.template} initialLayout={saved.layout} customShapes={customShapes} />
+          </div>
+        ))}
+      </div>
+      {exportOpen && (
+        <div className="modal-overlay" onClick={() => !exporting && setExportOpen(false)}>
+          <div className="modal-card export-panel" role="dialog" aria-modal="true" aria-label="Dışa aktarma seçenekleri" onClick={(event) => event.stopPropagation()}>
+            <button className="modal-close" type="button" aria-label="Kapat" disabled={Boolean(exporting)} onClick={() => setExportOpen(false)}><X /></button>
+            <div className="export-heading"><Download /><div><strong>Baskı ve dışa aktarma</strong><p>Kartı tek PNG olarak veya kesime hazır A4 sayfası halinde indirin.</p></div></div>
+            <div className="export-options">
+              <button type="button" className="export-option" disabled={Boolean(exporting)} onClick={exportCard}>
+                <span className="export-option-icon"><ImageIcon /></span>
+                <span><strong>Tek kart PNG</strong><small>Mevcut kart ölçüsünde yüksek çözünürlüklü görsel</small></span>
+                {exporting === "png" ? <LoaderCircle className="spin" /> : <Download />}
+              </button>
+              <button type="button" className="export-option recommended" disabled={Boolean(exporting) || (form.cardFormat || "vehicle") !== "vehicle"} onClick={exportA4PrintSheet}>
+                <span className="export-option-icon"><FileText /></span>
+                <span><strong>6'lı A4 baskı PDF</strong><small>A4 yatay, 3 x 2 dizilim, kesilmiş kart 65 x 94 mm</small></span>
+                {exporting === "pdf" ? <LoaderCircle className="spin" /> : <Download />}
+              </button>
+              <button type="button" className="export-option" disabled={Boolean(exporting) || !printableSavedTemplates.length || !selectedPrintCardIds.length} onClick={exportMixedA4PrintSheet}>
+                <span className="export-option-icon"><Copy /></span>
+                <span><strong>Farklı araçlarla karışık A4</strong><small>Seçilen tema, plaka, telefon ve QR bilgilerini aynı sayfaya dizer</small></span>
+                {exporting === "mixed" ? <LoaderCircle className="spin" /> : <Download />}
+              </button>
+            </div>
+            <div className="mixed-print-section">
+              <div className="mixed-print-heading"><strong>Karışık sayfaya eklenecek kartlar</strong><small>En fazla 6 farklı kart seçin. Seçimler 6 baskı yuvasına sırayla dağıtılır.</small></div>
+              <div className="mixed-card-picker">
+                <button type="button" aria-pressed={selectedPrintCardIds.includes("current")} className={selectedPrintCardIds.includes("current") ? "selected" : ""} disabled={(form.cardFormat || "vehicle") !== "vehicle" || (!selectedPrintCardIds.includes("current") && selectedPrintCardIds.length >= 6)} onClick={() => togglePrintCard("current")}>
+                  <span style={{ background: form.backgroundColor || template.bg }} />
+                  <strong>{form.plate || "Geçerli kart"}</strong><small>{template.label}</small>
+                </button>
+                {printableSavedTemplates.map((saved) => {
+                  const selected = selectedPrintCardIds.includes(saved.template.id);
+                  return <button key={saved.template.id} type="button" aria-pressed={selected} className={selected ? "selected" : ""} disabled={!selected && selectedPrintCardIds.length >= 6} onClick={() => togglePrintCard(saved.template.id)}>
+                    <span style={{ background: saved.form.backgroundColor || saved.template.bg }} />
+                    <strong>{saved.form.plate || saved.template.label}</strong><small>{saved.template.label}</small>
+                  </button>;
+                })}
+              </div>
+              {!printableSavedTemplates.length && <small className="mixed-print-empty">Farklı bir aracı hazırlayıp kart altındaki "Farklı kaydet" düğmesine basın. Kayıtlı araçlar burada görünür.</small>}
+            </div>
+            <div className="print-spec"><strong>Kesim payı dahil</strong><span>Tema, kesim çizgisinin yatayda 2 mm ve dikeyde 3 mm dışına taşar. Kartı çizgilerden kestikten sonra PVC kaplayın.</span></div>
+            {(form.cardFormat || "vehicle") !== "vehicle" && <div className="inline-error">6'lı A4 baskı için önce "Araç kartı" ölçüsünü seçin.</div>}
+          </div>
+        </div>
+      )}
       {settingsOpen && (
         <div className="modal-overlay" onClick={() => setSettingsOpen(false)}>
           <div className="modal-card settings-panel" role="dialog" aria-modal="true" aria-label="Sağlayıcı ayarları" onClick={(event) => event.stopPropagation()}>
