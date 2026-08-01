@@ -9,6 +9,7 @@ AGENTS.md
 .claude/
 CLAUDE.md
 .playwright-cli/
+.playwright-mcp/
 output/
 server-run.log
 design-concept.png
