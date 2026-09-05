@@ -45,9 +45,14 @@ const profileSlug = (value) => String(value || "")
   .replace(/^-+|-+$/g, "")
   .slice(0, 48);
 
+// Türkiye numaralarını E.164'e çevirir: "0532...", "532...", "0090532...", "+90532..." hepsi +90532... olur.
 const phoneHref = (value) => {
-  const digits = String(value || "").replace(/\D/g, "");
-  return digits ? `+${digits.startsWith("0") ? `90${digits.slice(1)}` : digits}` : "";
+  let digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  else if (digits.startsWith("0")) digits = `90${digits.slice(1)}`;
+  else if (digits.length === 10) digits = `90${digits}`;
+  return `+${digits}`;
 };
 
 const readPatternIndex = () => {
@@ -137,14 +142,43 @@ app.use((request, response, next) => {
   next();
 });
 
+// Aynı adı taşıyan iki kişi birbirinin telefonunu ezmesin: çakışmada slug'a sayı eklenir.
+const resolveSlug = (baseSlug, profiles, phone) => {
+  if (!profiles[baseSlug] || phoneHref(profiles[baseSlug].phone) === phoneHref(phone)) return baseSlug;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${baseSlug}-${index}`;
+    if (!profiles[candidate] || phoneHref(profiles[candidate].phone) === phoneHref(phone)) return candidate;
+  }
+  return "";
+};
+
+const profileWrites = new Map();
+const rateLimited = (request) => {
+  const now = Date.now();
+  const key = request.ip || "local";
+  const hits = (profileWrites.get(key) || []).filter((stamp) => now - stamp < 60_000);
+  hits.push(now);
+  profileWrites.set(key, hits);
+  return hits.length > 60;
+};
+
+const MAX_PROFILES = 500;
+
 app.post("/api/profiles", (request, response) => {
+  if (rateLimited(request)) return response.status(429).json({ error: "Çok fazla istek. Bir dakika sonra tekrar deneyin." });
   const owner = String(request.body?.owner || "").trim().slice(0, 80);
   const phone = String(request.body?.phone || "").trim().slice(0, 32);
   const plate = String(request.body?.plate || "").trim().slice(0, 24);
   if (!owner || !phone) return response.status(400).json({ error: "Ad ve telefon numarası zorunludur." });
-  const slug = profileSlug(request.body?.slug || owner);
-  if (!slug) return response.status(400).json({ error: "Geçerli bir profil adı oluşturulamadı." });
+  if (phoneHref(phone).replace(/\D/g, "").length < 10) return response.status(400).json({ error: "Telefon numarası geçersiz." });
+  const baseSlug = profileSlug(request.body?.slug || owner);
+  if (!baseSlug) return response.status(400).json({ error: "Geçerli bir profil adı oluşturulamadı." });
   const profiles = readProfiles();
+  const slug = resolveSlug(baseSlug, profiles, phone);
+  if (!slug) return response.status(409).json({ error: "Bu isim için boş profil adresi kalmadı. Farklı bir ad kullanın." });
+  if (!profiles[slug] && Object.keys(profiles).length >= MAX_PROFILES) {
+    return response.status(507).json({ error: "Profil sayısı üst sınıra ulaştı." });
+  }
   profiles[slug] = {
     owner,
     phone,
@@ -162,7 +196,7 @@ app.post("/api/profiles", (request, response) => {
 app.get("/u/:slug/vcard", (request, response) => {
   const profile = readProfiles()[profileSlug(request.params.slug)];
   if (!profile) return response.status(404).end();
-  const safe = (value) => String(value || "").replace(/[\r\n]/g, " ").replace(/[;,]/g, "\\$&");
+  const safe = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/[\r\n]/g, " ").replace(/[;,]/g, "\\$&");
   const vcard = [
     "BEGIN:VCARD", "VERSION:3.0", `FN:${safe(profile.owner)}`,
     `TEL;TYPE=CELL:${safe(phoneHref(profile.phone))}`,

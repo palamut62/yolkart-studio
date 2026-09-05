@@ -282,10 +282,14 @@ function safeQrColor(color: string, background = "#ffffff") {
   return colorIsLight(background) === colorIsLight(color) ? (colorIsLight(background) ? "#071320" : "#ffffff") : color;
 }
 
+// Türkiye numaralarını E.164'e çevirir: "0532...", "532...", "0090532...", "+90532..." hepsi +90532... olur.
 function phoneQrValue(phone: string) {
-  const digits = phone.replace(/\D/g, "");
+  let digits = phone.replace(/\D/g, "");
   if (!digits) return "tel:";
-  return `tel:+${digits.startsWith("0") ? `90${digits.slice(1)}` : digits}`;
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  else if (digits.startsWith("0")) digits = `90${digits.slice(1)}`;
+  else if (digits.length === 10) digits = `90${digits}`;
+  return `tel:+${digits}`;
 }
 
 // İnternetsiz çalışan vCard: okutunca cihaz doğrudan "rehbere ekle" ekranını açar.
@@ -770,6 +774,9 @@ export default function App() {
 
   useEffect(() => {
     if (!designHydrated || !form.owner.trim() || !form.phone.trim()) return;
+    // Örnek veri hiç değiştirilmediyse sunucuya sahte bir profil yazma.
+    const demo = defaultFormRef.current;
+    if (form.owner === demo.owner && form.phone === demo.phone) return;
     const timeout = window.setTimeout(async () => {
       const slug = form.owner.toLocaleLowerCase("tr-TR").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ı/g, "i").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       if (!slug) return;
@@ -1452,6 +1459,11 @@ export default function App() {
             </section>
             <button className="ai-generate" onClick={saveSettings} disabled={settingsLoading}>{settingsLoading ? <LoaderCircle className="spin" /> : <Check />}{settingsLoading ? "Kaydediliyor" : "Ayarları kaydet"}</button>
             <button className="reset-design" type="button" onClick={resetToDefault}><RotateCcw /> Varsayılan tasarıma dön</button>
+            <p className="app-credit">
+              Ürün sahibi: <strong>Umut Çelik</strong>
+              <a href="https://x.com/palamut62" target="_blank" rel="noopener noreferrer">X</a>
+              <a href="https://github.com/palamut62" target="_blank" rel="noopener noreferrer">GitHub</a>
+            </p>
           </div>
         </div>
       )}

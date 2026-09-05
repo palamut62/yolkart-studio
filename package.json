@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "author": "Umut Çelik (palamut62) <umutins62@hotmail.com> (https://github.com/palamut62)",
+  "repository": { "type": "git", "url": "https://github.com/palamut62/yolkart-studio" },
   "scripts": {
     "dev": "node server.mjs",
     "build": "tsc -b && vite build",
